@@ -4241,6 +4241,40 @@ def resolve_provider_client(
 
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig is None:
+        # ── Plugin provider fallback (ProviderProfile not in PROVIDER_REGISTRY) ─
+        # Plugin-based providers (e.g. polza-hermes-plugin) register via
+        # ProviderProfile but are NOT in the hardcoded PROVIDER_REGISTRY dict.
+        # Try to resolve credentials through the plugin profile before giving up.
+        try:
+            from providers import get_provider_profile
+            profile = get_provider_profile(provider)
+            if profile is not None:
+                api_key = explicit_api_key or ""
+                if not api_key:
+                    for env_var in profile.env_vars:
+                        val = os.getenv(env_var, "").strip()
+                        if val:
+                            api_key = val
+                            break
+                base_url = explicit_base_url or profile.base_url or ""
+                if base_url and api_key:
+                    raw_base_url = base_url.rstrip("/")
+                    clean_base = _to_openai_base_url(raw_base_url)
+                    default = (model or profile.default_aux_model
+                               or _get_aux_model_for_provider(provider)
+                               or _read_main_model())
+                    final_model = _normalize_resolved_model(model or default, provider)
+                    client = OpenAI(api_key=api_key, base_url=clean_base)
+                    logger.info("resolve_provider_client: plugin profile %s (%s)",
+                                provider, final_model)
+                    return (_to_async_client(client, final_model, is_vision=is_vision)
+                            if async_mode else (client, final_model))
+                logger.debug("resolve_provider_client: plugin profile %r has no "
+                             "base_url or api_key (base_url=%r, has_key=%s)",
+                             provider, base_url, bool(api_key))
+        except Exception:
+            logger.debug("resolve_provider_client: plugin profile fallback failed for %r",
+                         provider, exc_info=True)
         logger.warning("resolve_provider_client: unknown provider %r", provider)
         return None, None
 
